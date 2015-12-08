@@ -21,19 +21,19 @@ elif [[ "$1" == "stack" && "$2" == "pre-install" ]]; then
         install_ceph_remote
     fi
 elif [[ "$1" == "stack" && "$2" == "post-config" ]]; then
-    if is_service_enabled glance; then
+    if is_service_enabled glance && [[ "$CONFIGURE_CEPH_GLANCE" == "True" ]]; then
         echo_summary "Configuring Glance for Ceph"
         configure_ceph_glance
     fi
-    if is_service_enabled nova; then
+    if is_service_enabled nova && [[ "$CONFIGURE_CEPH_NOVA" == "True" ]]; then
         echo_summary "Configuring Nova for Ceph"
         configure_ceph_nova
     fi
-    if is_service_enabled cinder; then
+    if is_service_enabled cinder && [[ "$CONFIGURE_CEPH_CINDER" == "True" ]]; then
         echo_summary "Configuring Cinder for Ceph"
         configure_ceph_cinder
     fi
-    if is_service_enabled cinder || is_service_enabled nova; then
+    if (is_service_enabled cinder && [[ "$CONFIGURE_CEPH_CINDER" == "True" ]]) || (is_service_enabled nova && [[ "$CONFIGURE_CEPH_NOVA" == "True" ]]); then
         # NOTE (leseb): the part below is a requirement
         # to attach Ceph block devices
         echo_summary "Configuring libvirt secret"
@@ -41,15 +41,15 @@ elif [[ "$1" == "stack" && "$2" == "post-config" ]]; then
     fi
 
     if [ "$REMOTE_CEPH" = "False" ]; then
-        if is_service_enabled glance; then
+        if is_service_enabled glance && [[ "$CONFIGURE_CEPH_GLANCE" == "True" ]]; then
             echo_summary "Configuring Glance for Ceph"
             configure_ceph_embedded_glance
         fi
-        if is_service_enabled nova; then
+        if is_service_enabled nova && [[ "$CONFIGURE_CEPH_NOVA" == "True" ]]; then
             echo_summary "Configuring Nova for Ceph"
             configure_ceph_embedded_nova
         fi
-        if is_service_enabled cinder; then
+        if is_service_enabled cinder && [[ "$CONFIGURE_CEPH_CINDER" == "True" ]]; then
             echo_summary "Configuring Cinder for Ceph"
             configure_ceph_embedded_cinder
         fi

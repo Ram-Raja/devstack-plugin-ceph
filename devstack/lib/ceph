@@ -50,17 +50,21 @@ CEPH_FSID=$(uuidgen)
 CEPH_CONF_FILE=${CEPH_CONF_DIR}/ceph.conf
 
 # Glance
+CONFIGURE_CEPH_GLANCE=$(trueorfalse True CONFIGURE_CEPH_GLANCE)
 GLANCE_CEPH_USER=${GLANCE_CEPH_USER:-glance}
 GLANCE_CEPH_POOL=${GLANCE_CEPH_POOL:-images}
 GLANCE_CEPH_POOL_PG=${GLANCE_CEPH_POOL_PG:-8}
 GLANCE_CEPH_POOL_PGP=${GLANCE_CEPH_POOL_PGP:-8}
 
 # Nova
+CONFIGURE_CEPH_NOVA=$(trueorfalse True CONFIGURE_CEPH_NOVA)
 NOVA_CEPH_POOL=${NOVA_CEPH_POOL:-vms}
 NOVA_CEPH_POOL_PG=${NOVA_CEPH_POOL_PG:-8}
 NOVA_CEPH_POOL_PGP=${NOVA_CEPH_POOL_PGP:-8}
 
 # Cinder
+CONFIGURE_CEPH_CINDER=$(trueorfalse True CONFIGURE_CEPH_CINDER)
+CONFIGURE_CEPH_CINDER_BACKUP=$(trueorfalse True CONFIGURE_CEPH_CINDER_BACKUP)
 CINDER_CEPH_POOL=${CINDER_CEPH_POOL:-volumes}
 CINDER_CEPH_POOL_PG=${CINDER_CEPH_POOL_PG:-8}
 CINDER_CEPH_POOL_PGP=${CINDER_CEPH_POOL_PGP:-8}
@@ -119,7 +123,7 @@ sudo rm -f secret.xml
 
 # undefine_virsh_secret() - Undefine Cinder key secret from libvirt
 function undefine_virsh_secret {
-if is_service_enabled cinder || is_service_enabled nova; then
+if (is_service_enabled cinder && [ "$CONFIGURE_CEPH_CINDER" == "True" ]) || (is_service_enabled nova && [ "$CONFIGURE_CEPH_NOVA" == "True" ]); then
     local virsh_uuid
     virsh_uuid=$(sudo virsh secret-list | awk '/^ ?[0-9a-z]/ { print $1 }')
     sudo virsh secret-undefine ${virsh_uuid} >/dev/null 2>&1
@@ -145,25 +149,25 @@ fi
 # runs that a clean run would need to clean up
 function cleanup_ceph_remote {
 # do a proper cleanup from here to avoid leftover on the remote Ceph cluster
-if is_service_enabled glance; then
+if is_service_enabled glance && [[ "$CONFIGURE_CEPH_GLANCE" == "True" ]]; then
     sudo ceph osd pool delete $GLANCE_CEPH_POOL $GLANCE_CEPH_POOL \
     --yes-i-really-really-mean-it > /dev/null 2>&1
 
     sudo ceph auth del client.$GLANCE_CEPH_USER > /dev/null 2>&1
 fi
-if is_service_enabled cinder; then
+if is_service_enabled cinder && [[ "$CONFIGURE_CEPH_CINDER" == "True" ]]; then
     sudo ceph osd pool delete $CINDER_CEPH_POOL $CINDER_CEPH_POOL \
     --yes-i-really-really-mean-it > /dev/null 2>&1
 
     sudo ceph auth del client.$CINDER_CEPH_USER > /dev/null 2>&1
 fi
-if is_service_enabled c-bak; then
+if is_service_enabled c-bak && [[ "$CONFIGURE_CEPH_CINDER_BACKUP" == "True" ]]; then
     sudo ceph osd pool delete $CINDER_BAK_CEPH_POOL $CINDER_BAK_CEPH_POOL \
     --yes-i-really-really-mean-it > /dev/null 2>&1
 
     sudo ceph auth del client.$CINDER_BAK_CEPH_USER > /dev/null 2>&1
 fi
-if is_service_enabled nova; then
+if is_service_enabled nova  && [[ "$CONFIGURE_CEPH_NOVA" == "True" ]]; then
     iniset $NOVA_CONF libvirt rbd_secret_uuid ""
     sudo ceph osd pool delete $NOVA_CEPH_POOL $NOVA_CEPH_POOL \
     --yes-i-really-really-mean-it > /dev/null 2>&1
@@ -431,7 +435,7 @@ iniset $NOVA_CONF libvirt images_type rbd
 iniset $NOVA_CONF libvirt images_rbd_pool ${NOVA_CEPH_POOL}
 iniset $NOVA_CONF libvirt images_rbd_ceph_conf ${CEPH_CONF_FILE}
 
-if ! is_service_enabled cinder; then
+if ! (is_service_enabled cinder && [[ "$CONFIGURE_CEPH_CINDER" == "True" ]]); then
     sudo ceph -c ${CEPH_CONF_FILE} \
     auth get-or-create client.${CINDER_CEPH_USER} \
     mon "allow r" \
