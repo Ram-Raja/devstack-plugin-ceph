@@ -71,6 +71,13 @@ CINDER_CEPH_POOL_PGP=${CINDER_CEPH_POOL_PGP:-8}
 CINDER_CEPH_USER=${CINDER_CEPH_USER:-cinder}
 CINDER_CEPH_UUID=${CINDER_CEPH_UUID:-$(uuidgen)}
 
+# Manila
+CONFIGURE_CEPH_MANILA=$(trueorfalse True CONFIGURE_CEPH_MANILA)
+CEPHFS_POOL_PG=${CEPHFS_POOL_PG:-8}
+CEPHFS_METADATA_POOL=${CEPHFS_CEPH_POOL:-cephfs_metadata}
+CEPHFS_DATA_POOL=${CEPHFS_CEPH_POOL:-cephfs_data}
+MANILA_CEPH_USER=${MANILA_CEPH_USER:-manila}
+
 # Set ``CEPH_REPLICAS`` to configure how many replicas are to be
 # configured for your Ceph cluster. By default we are configuring
 # only one replica since this is way less CPU and memory intensive. If
@@ -172,6 +179,9 @@ if is_service_enabled nova  && [[ "$CONFIGURE_CEPH_NOVA" == "True" ]]; then
     sudo ceph osd pool delete $NOVA_CEPH_POOL $NOVA_CEPH_POOL \
     --yes-i-really-really-mean-it > /dev/null 2>&1
 fi
+if is_service_enabled manila && [[ "$CONFIGURE_CEPH_MANILA" == "True" ]]; then
+    sudo ceph auth del client.$MANILA_CEPH_USER
+fi
 }
 
 function cleanup_ceph_embedded {
@@ -230,6 +240,10 @@ sudo ceph-mon -c ${CEPH_CONF_FILE} --mkfs -i $(hostname) \
 
 if is_ubuntu; then
     sudo touch /var/lib/ceph/mon/ceph-$(hostname)/upstart
+    # TODO (rraja): Do a Ceph version check. If version >= Infernalis, then
+    # make sure that user "ceph" is the owner of files within
+    # ${CEPH_DATA_DIR}.
+    sudo chown -R ceph ${CEPH_DATA_DIR}
     sudo initctl emit ceph-mon id=$(hostname)
 else
     sudo touch /var/lib/ceph/mon/ceph-$(hostname)/sysvinit
@@ -299,6 +313,20 @@ for rep in ${CEPH_REPLICAS_SEQ}; do
     fi
 done
 
+# create a MDS
+MDS_ID=a
+sudo mkdir -p ${CEPH_DATA_DIR}/mds/ceph-${MDS_ID}
+sudo ceph -c ${CEPH_CONF_FILE} auth get-or-create mds.${MDS_ID} \
+    mon 'allow profile mds ' osd 'allow rw' mds 'allow' | \
+    sudo tee ${CEPH_DATA_DIR}/mds/ceph-${MDS_ID}/keyring
+
+
+if is_ubuntu; then
+    sudo touch ${CEPH_DATA_DIR}/mds/ceph-${MDS_ID}/upstart
+else
+    sudo touch ${CEPH_DATA_DIR}/mds/ceph-${MDS_ID}/sysvinit
+fi
+
 # bootstrap rados gateway
 sudo mkdir ${CEPH_DATA_DIR}/radosgw/ceph-radosgw.$(hostname)
 sudo ceph auth get-or-create client.radosgw.$(hostname) \
@@ -314,6 +342,11 @@ else
     sudo touch \
     ${CEPH_DATA_DIR}/radosgw/ceph-radosgw.$(hostname)/{sysvinit,done}
 fi
+
+# TODO (rraja): Do a Ceph version check. If version >= Infernalis, then
+# make sure that user "ceph" is the owner of files within
+# ${CEPH_DATA_DIR}.
+sudo chown -R ceph ${CEPH_DATA_DIR}
 }
 
 function configure_ceph_embedded_rgw {
@@ -478,6 +511,27 @@ sudo chown ${STACK_USER}:$(id -g -n $whoami) \
 ${CEPH_CONF_DIR}/ceph.client.${CINDER_CEPH_USER}.keyring
 }
 
+function configure_ceph_manila {
+sudo ceph -c ${CEPH_CONF_FILE} osd pool create ${CEPHFS_METADATA_POOL} ${CEPHFS_POOL_PG}
+sudo ceph -c ${CEPH_CONF_FILE} osd pool create ${CEPHFS_DATA_POOL} ${CEPHFS_POOL_PG}
+sudo ceph -c ${CEPH_CONF_FILE} fs new cephfs ${CEPHFS_METADATA_POOL} ${CEPHFS_DATA_POOL}
+sudo ceph -c ${CEPH_CONF_FILE} auth get-or-create client.${MANILA_CEPH_USER} \
+    mon "allow *" \
+    osd "allow rw" \
+    mds "allow *" | \
+    sudo tee ${CEPH_CONF_DIR}/ceph.client.${MANILA_CEPH_USER}.keyring
+    sudo chown ${STACK_USER}:$(id -g -n $whoami) ${CEPH_CONF_DIR}/ceph.client.${MANILA_CEPH_USER}.keyring
+}
+
+function configure_ceph_embedded_manila {
+sudo ceph -c ${CEPH_CONF_FILE} osd pool set ${CEPHFS_DATA_POOL} size ${CEPH_REPLICAS}
+sudo ceph -c ${CEPH_CONF_FILE} osd pool set ${CEPHFS_METADATA_POOL} size ${CEPH_REPLICAS}
+if [[ $CEPH_REPLICAS -ne 1 ]]; then
+    sudo ceph -c ${CEPH_CONF_FILE} osd pool set ${CEPHFS_DATA_POOL} crush_ruleset ${RULE_ID}
+    sudo ceph -c ${CEPH_CONF_FILE} osd pool set ${CEPHFS_METADATA_POOL} crush_ruleset ${RULE_ID}
+fi
+}
+
 # init_ceph() - Initialize databases, etc.
 function init_ceph {
 # clean up from previous (possibly aborted) runs
@@ -494,13 +548,29 @@ install_package ceph-common
 
 function install_ceph {
 if is_ubuntu; then
-    wget -q -O- 'https://download.ceph.com/keys/release.asc' \
-    | sudo apt-key add -
+    # use wip-manila development repo until Ceph patches needed by Manila's Ceph
+    # driver are available in a release package.
+    if is_service_enabled manila && [[ "$CONFIGURE_CEPH_MANILA" == "True" ]]; then
+        wget -q -O- 'https://download.ceph.com/keys/autobuild.asc' \
+        | sudo apt-key add -
 
-    echo deb http://ceph.com/debian-${CEPH_RELEASE} $(lsb_release -sc) main \
-    | sudo tee /etc/apt/sources.list.d/ceph.list
+        echo deb \
+        http://gitbuilder.ceph.com/ceph-deb-$(lsb_release -sc)-x86_64-basic/ref/wip-manila \
+        $(lsb_release -sc) main | sudo tee /etc/apt/sources.list.d/ceph.list
+    else
+        wget -q -O- 'https://download.ceph.com/keys/release.asc' \
+        | sudo apt-key add -
 
+        echo deb http://ceph.com/debian-${CEPH_RELEASE} $(lsb_release -sc) main \
+        | sudo tee /etc/apt/sources.list.d/ceph.list
+
+    fi
+
+    # Update package repo and restore global variable setting after use.
+    local TMP=$RETRY_UPDATE
+    RETRY_UPDATE=True
     install_package ceph radosgw libnss3-tools
+    RETRY_UPDATE=$TMP
 else
     # Install directly from distro repos. See LP bug 1521073 for more details.
     # If distro doesn't carry latest ceph, users can install latest ceph repo
@@ -513,10 +583,15 @@ fi
 # start_ceph() - Start running processes, including screen
 function start_ceph {
 if is_ubuntu; then
+    # TODO (rraja): Do a Ceph version check. If version >= Infernalis, then
+    # make sure that user "ceph" is the owner of files within
+    # ${CEPH_DATA_DIR}.
+    sudo chown -R ceph ${CEPH_DATA_DIR}
     sudo initctl emit ceph-mon id=$(hostname)
     for id in $(sudo ceph -c ${CEPH_CONF_FILE} osd ls); do
         sudo start ceph-osd id=${id}
     done
+    sudo start ceph-mds id=a
 else
     sudo service ceph start
 fi

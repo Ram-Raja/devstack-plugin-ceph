@@ -33,6 +33,10 @@ elif [[ "$1" == "stack" && "$2" == "post-config" ]]; then
         echo_summary "Configuring Cinder for Ceph"
         configure_ceph_cinder
     fi
+    if is_service_enabled manila && [[ "$CONFIGURE_CEPH_MANILA" == "True" ]]; then
+        echo_summary "Configuring Manila for Ceph"
+        configure_ceph_manila
+    fi
     if (is_service_enabled cinder && [[ "$CONFIGURE_CEPH_CINDER" == "True" ]]) || (is_service_enabled nova && [[ "$CONFIGURE_CEPH_NOVA" == "True" ]]); then
         # NOTE (leseb): the part below is a requirement
         # to attach Ceph block devices
@@ -52,6 +56,10 @@ elif [[ "$1" == "stack" && "$2" == "post-config" ]]; then
         if is_service_enabled cinder && [[ "$CONFIGURE_CEPH_CINDER" == "True" ]]; then
             echo_summary "Configuring Cinder for Ceph"
             configure_ceph_embedded_cinder
+        fi
+        if is_service_enabled manila && [[ "$CONFIGURE_CEPH_MANILA" == "True" ]]; then
+             echo_summary "Configuring Manila for Ceph"
+             configure_ceph_embedded_manila
         fi
         # FIXME: Fix this once radosgw service is running
 
