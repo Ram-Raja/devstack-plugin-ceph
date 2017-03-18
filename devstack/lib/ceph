@@ -336,6 +336,9 @@ function cleanup_ceph_embedded {
 
 function cleanup_ceph_general {
     _undefine_virsh_secret
+    if is_ceph_enabled_for_service_manila && [ $MANILA_CEPH_DRIVER == 'cephfsnfs' ]; then
+        cleanup_nfs_ganesha
+    fi
 }
 
 function cleanup_containerized_ceph {
@@ -696,8 +699,60 @@ function configure_ceph_manila {
     client mount gid = 0
 EOF
 
+    if [ $MANILA_CEPH_DRIVER == 'cephfsnfs' ]; then
+        configure_nfs_ganesha
+    fi
+
 # RESTART DOCKER CONTAINER
 
+}
+
+function install_nfs_ganesha {
+    # Install from source, NFS-Ganesha with CephFS's FSAL
+    # Install dependencies
+    install_package bison build-essential cmake dbus flex libcephfs-dev \
+                    libdbus-1-dev libkrb5-dev libtirpc1 libssl-dev nfs-common \
+                    pkg-config rpcbind uuid-dev libcap-dev libblkid-dev \
+
+    # Use NFS-Ganesha's latest development branch 'next'
+    git clone --recursive -b next https://github.com/nfs-ganesha/nfs-ganesha
+    cd nfs-ganesha
+    mkdir build && cd build
+    cmake -DUSE_DBUS=ON ../src && make
+    sudo make install
+
+    # Set up systemd unit files for Xenial
+    sudo cp ../src/scripts/systemd/*.service /lib/systemd/system/
+    sudo sed -i '/^ExecStart.*/c\ExecStart=\/usr\/lib\/systemd\/scripts\/nfs-ganesha-config.sh' /lib/systemd/system/nfs-ganesha-config.service
+    sudo cp ../src/scripts/nfs-ganesha-config.sh /usr/lib/systemd/scripts/
+    sudo chmod 755 /usr/lib/systemd/scripts/nfs-ganesha-config.sh
+    sudo mkdir -p /etc/sysconfig
+    sudo cp ../src/scripts/systemd/sysconfig/nfs-ganesha /etc/sysconfig/ganesha
+    sudo cp ../src/scripts/ganeshactl/org.ganesha.nfsd.conf /etc/dbus-1/system.d/
+
+    # Remove source
+    cd ../../ && rm -rf nfs-ganesha
+}
+
+function configure_nfs_ganesha {
+    # Configure NFS-Ganesha to work with Manila's CephFS driver
+    sudo mkdir -p /etc/ganesha/export.d
+    sudo touch /etc/ganesha/export.d/INDEX.conf
+    echo "%include /etc/ganesha/export.d/INDEX.conf" | sudo tee  /etc/ganesha/ganesha.conf
+}
+
+function cleanup_nfs_ganesha {
+    sudo rm -f /var/log/ganesha.log
+    sudo rm -rf /etc/ganesha
+
+    sudo rm -f /usr/bin/ganesha.nfsd
+    sudo rm -rf /usr/lib/ganesha
+    # Also installed libntirpc when installing ganesha from source
+    sudo rm -f /usr/lib/libntirpc.*
+
+    sudo rm -f /lib/systemd/system/nfs-ganesha.*
+    sudo rm -f /usr/lib/systemd/scripts/nfs-ganesha-config.sh
+    sudo rm -f /etc/sysconfig/ganesha
 }
 
 function configure_ceph_embedded_manila {
@@ -806,11 +861,11 @@ function install_ceph {
             # The 'apt' package manager needs the following package to access
             # HTTPS enabled repositories such as the Ceph repos hosted by the
             # shaman/chacra system.
+
             install_package apt-transport-https
 
             curl -L https://shaman.ceph.com/api/repos/ceph/jewel/latest/ubuntu/$os_CODENAME/repo | \
                 sudo tee /etc/apt/sources.list.d/ceph.list
-
             CEPH_PACKAGES="${CEPH_PACKAGES} ceph-mds libcephfs1"
 
         elif [ -f "$APT_REPOSITORY_FILE" ]; then
@@ -844,6 +899,10 @@ function install_ceph {
         # Update package repo.
         REPOS_UPDATED=False
         install_package ${CEPH_PACKAGES}
+
+        if [ $MANILA_CEPH_DRIVER == 'cephfsnfs' ]; then
+            install_nfs_ganesha
+        fi
     else
         CEPH_PACKAGES="ceph"
 
@@ -876,6 +935,9 @@ function start_ceph {
         done
         if is_ceph_enabled_for_service manila; then
             sudo systemctl start ceph-mds@${MDS_ID}
+            if [ $MANILA_CEPH_DRIVER == 'cephfsnfs' ]; then
+                sudo systemctl start nfs-ganesha
+            fi
         fi
     else
         sudo service ceph start
@@ -899,6 +961,9 @@ function stop_ceph {
         fi
         if is_ceph_enabled_for_service manila; then
             sudo systemctl stop ceph-mds@${MDS_ID}
+            if [ $MANILA_CEPH_DRIVER == 'cephfsnfs' ]; then
+                sudo systemctl stop nfs-ganesha
+            fi
         fi
         # if mon is dead or unhealthy we won't get the list
         # of osds but should continue anyways.
